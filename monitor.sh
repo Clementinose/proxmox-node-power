@@ -1,60 +1,48 @@
 #!/bin/bash
-# Script för att visa faktisk strömförbrukning på noden (inga simuleringar)
+# Proxmox Node Power Monitor – REAL data only
 
 clear
+echo "==============================="
 echo "🔌 Proxmox Node Power Monitor"
 echo "==============================="
 
-# Hostname & IP
 HOSTNAME=$(hostname)
 IP=$(hostname -I | awk '{print $1}')
+
 echo "🖥️ Hostname: $HOSTNAME"
 echo "🌐 IP: $IP"
 
-# Init
 POWER_W=""
 
-# 1️⃣ Försök IPMI (Dell/HP)
-if command -v ipmitool &>/dev/null; then
-    POWER_W=$(ipmitool sdr | grep -i "Watts" | awk '{print $2}' | head -n1)
+# 1️⃣ IPMI via DCMI (Dell / HP PowerEdge)
+if command -v ipmitool >/dev/null 2>&1; then
+    POWER_W=$(ipmitool dcmi power reading 2>/dev/null \
+      | awk -F: '/Instantaneous power reading/ {gsub(/ W/,"",$2); print $2}')
 fi
 
-# 2️⃣ Försök Redfish (Dell/HugBox)
-if [ -z "$POWER_W" ] && command -v curl &>/dev/null; then
-    # Redfish endpoint måste konfigureras per maskin, exempel:
-    # POWER_W=$(curl -s -k -u "USER:PASS" https://$IP/redfish/v1/Chassis/1/Power | jq '.PowerControl[0].PowerConsumedWatts')
-    POWER_W="" # placeholder, kräver Redfish credentials
-fi
-
-# 3️⃣ Försök UPower (batteri/UPS)
-if [ -z "$POWER_W" ] && command -v upower &>/dev/null; then
-    BATTERY=$(upower -e | grep -i 'battery' | head -n1)
-    if [ ! -z "$BATTERY" ]; then
-        POWER_W=$(upower -i $BATTERY | grep -E "power" | awk '{print int($2)}')
+# 2️⃣ UPower (endast laptops / UPS)
+if [ -z "$POWER_W" ] && command -v upower >/dev/null 2>&1; then
+    DEV=$(upower -e | grep -Ei 'battery|ups' | head -n1)
+    if [ -n "$DEV" ]; then
+        POWER_W=$(upower -i "$DEV" | awk '/energy-rate/ {print int($2*1000)}')
     fi
 fi
 
-# 4️⃣ Om inget funkar
+# 3️⃣ Output
 if [ -z "$POWER_W" ]; then
-    POWER_W="Value cannot be found"
-fi
-
-echo "⚡ Aktuell strömförbrukning: $POWER_W W"
-
-# Beräkna kWh om vi har ett värde
-if [[ "$POWER_W" != "Value cannot be found" ]]; then
-    HOURS_PER_DAY=24
-    DAYS_PER_MONTH=30
-    DAYS_PER_YEAR=365
-
-    MONTH_KWH=$(echo "scale=2; $POWER_W * $HOURS_PER_DAY * $DAYS_PER_MONTH / 1000" | bc)
-    YEAR_KWH=$(echo "scale=2; $POWER_W * $HOURS_PER_DAY * $DAYS_PER_YEAR / 1000" | bc)
-
-    echo "📅 Strömförbrukning per månad: $MONTH_KWH kWh"
-    echo "📅 Strömförbrukning per år:    $YEAR_KWH kWh"
+    echo "⚡ Strömförbrukning: value cannot be found"
+    echo "📅 Per månad: value cannot be found"
+    echo "📅 Per år: value cannot be found"
 else
-    echo "📅 Strömförbrukning per månad: Value cannot be found"
-    echo "📅 Strömförbrukning per år:    Value cannot be found"
+    echo "⚡ Strömförbrukning: $POWER_W W"
+
+    DAY_KWH=$(awk "BEGIN {print ($POWER_W*24)/1000}")
+    MONTH_KWH=$(awk "BEGIN {print $DAY_KWH*30}")
+    YEAR_KWH=$(awk "BEGIN {print $DAY_KWH*365}")
+
+    echo "📅 Per dag:   ${DAY_KWH} kWh"
+    echo "📅 Per månad: ${MONTH_KWH} kWh"
+    echo "📅 Per år:    ${YEAR_KWH} kWh"
 fi
 
 echo "==============================="
